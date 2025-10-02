@@ -1,123 +1,71 @@
-#!/usr/bin/env node
-
-const { program } = require('commander');
 const fs = require('fs');
-const path = require('path');
+const { Command } = require('commander');
+const program = new Command();
 
 program
-  .option('-i, --input <path>', 'input file (JSON)')   // not requiredOption - we'll check manually to show exact message
+  .option('-i, --input <path>', 'input JSON file')
   .option('-o, --output <path>', 'output file (optional)')
   .option('-d, --display', 'display result in console')
-  .parse(process.argv);
+  .option('-s, --survived', 'show only survived passengers')
+  .option('-a, --age', 'display age of passengers');
 
+program.parse(process.argv);
 const options = program.opts();
 
-// --- check required input manually to show required error text ---
+// Перевірка обовʼязкового параметра
 if (!options.input) {
   console.error("Please, specify input file");
   process.exit(1);
 }
 
-const inputPath = path.resolve(process.cwd(), options.input);
-if (!fs.existsSync(inputPath)) {
+// Перевірка існування файлу
+if (!fs.existsSync(options.input)) {
   console.error("Cannot find input file");
   process.exit(1);
 }
 
-// Read file
-let raw;
+// Читання JSON, построчно
+let data = [];
 try {
-  raw = fs.readFileSync(inputPath, 'utf8');
-} catch (err) {
-  console.error("Cannot find input file");
-  process.exit(1);
-}
+  const lines = fs.readFileSync(options.input, 'utf8')
+                  .split(/\r?\n/)   // Розбиваємо на рядки
+                  .filter(line => line.trim() !== ''); // Ігноруємо порожні рядки
 
-// Try to parse JSON. Support:
-// 1) normal JSON array: [ {...}, {...} ]
-// 2) NDJSON (one JSON object per line)
-// 3) pseudo-array where file begins with [ and ends with ] but objects are on separate lines without commas
-function tryParseFlexible(rawText) {
-  const trimmed = rawText.trim();
-  // 1) Attempt full JSON.parse first (covers normal array and single object)
-  try {
-    const parsed = JSON.parse(trimmed);
-    // normalize to array of objects
-    if (Array.isArray(parsed)) return parsed;
-    return [parsed];
-  } catch (err) {
-    // fallthrough to NDJSON-like parsing
-  }
-
-  // 2) Attempt NDJSON / one-object-per-line parsing.
-  //    We'll split by newline, clean each line, remove leading '[' or trailing ']' and trailing commas.
-  const lines = rawText
-    .split(/\r?\n/)
-    .map(l => l.trim())
-    .filter(l => l.length > 0);
-
-  if (lines.length === 0) {
-    throw new Error('Invalid JSON format');
-  }
-
-  // Remove leading '[' token or remove leading '[' from first line if present
-  if (lines[0] === '[') lines.shift();
-  else lines[0] = lines[0].replace(/^\[+/, '');
-
-  // Remove trailing ']' token or trailing ']' from last line if present
-  const lastIdx = lines.length - 1;
-  if (lines[lastIdx] === ']') lines.pop();
-  else if (lines.length > 0) lines[lastIdx] = lines[lastIdx].replace(/\]+$/, '');
-
-  const objects = [];
-
-  // Try to parse each line as a complete JSON object.
-  // We'll remove a trailing comma if present (common when someone pasted array entries without commas).
-  for (let rawLine of lines) {
-    if (!rawLine) continue;
-    // Remove trailing comma that could separate elements but was lost in formatting
-    rawLine = rawLine.replace(/,$/, '').trim();
-    if (!rawLine) continue;
+  lines.forEach(line => {
     try {
-      const obj = JSON.parse(rawLine);
-      objects.push(obj);
-      continue;
+      data.push(JSON.parse(line));
     } catch (err) {
-      // If parsing fails, we could try to accumulate multi-line objects, but that complicates logic.
-      // For this project we assume each JSON object is on a single line (your sample looks like that).
-      throw new Error('Invalid JSON format');
+      console.error("Invalid JSON format in line:", line);
+      process.exit(1);
     }
-  }
-
-  if (objects.length === 0) throw new Error('Invalid JSON format');
-  return objects;
-}
-
-let dataArray;
-try {
-  dataArray = tryParseFlexible(raw);
+  });
 } catch (err) {
-  console.error("Invalid JSON format");
+  console.error("Cannot read input file");
   process.exit(1);
 }
 
-// Now we have an array of objects in dataArray
-const resultString = JSON.stringify(dataArray, null, 2);
-
-// If output path provided -> write file
-if (options.output) {
-  const outputPath = path.resolve(process.cwd(), options.output);
-  try {
-    fs.writeFileSync(outputPath, resultString, 'utf8');
-  } catch (err) {
-    console.error("Error writing to output file:", err.message);
-    process.exit(1);
-  }
+// Фільтрація за виживанням, якщо задано -s
+if (options.survived) {
+  data = data.filter(p => p.Survived === "1" || p.Survived === 1);
 }
 
-// If --display -> log to console
+// Формування рядків для виводу
+const outputLines = data.map(p => {
+  let line = p.Name;
+  if (options.age) line += ` ${p.Age ?? "N/A"}`;
+  line += ` ${p.Ticket}`;
+  return line;
+});
+
+// Якщо не задано -o і -d, нічого не робимо
+if (!options.output && !options.display) process.exit(0);
+
+// Вивід у консоль
 if (options.display) {
-  console.log(resultString);
+  outputLines.forEach(line => console.log(line));
 }
 
-// If neither --output nor --display -> do nothing (as required)
+// Запис у файл
+if (options.output) {
+  fs.writeFileSync(options.output, outputLines.join("\n"));
+}
